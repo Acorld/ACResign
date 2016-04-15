@@ -39,6 +39,12 @@
 
 @property (nonatomic, copy) NSMutableArray *certComboBoxItems;
 
+/// 需要签名的资源<资源路径>
+@property (nonatomic, strong) NSMutableArray *toResignResources;
+
+/// 是否正在为资源签名
+@property (nonatomic) BOOL isSigningResources;
+
 @end
 
 //key of bundle id in info.plist
@@ -105,6 +111,11 @@ static NSUserDefaults *defaults_;
 
 @implementation AppDelegate
 
+- (void)applicationWillTerminate:(NSNotification *)notification
+{
+    [self cleanWorkPath];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     [self initVariables];
     
@@ -144,6 +155,10 @@ static NSUserDefaults *defaults_;
     dataSource_ = [NSMutableArray arrayWithObjects:mainApp, nil];
     defaults_ = [NSUserDefaults standardUserDefaults];
 
+    _toResignResources = [NSMutableArray new];
+    
+    _isSigningResources = NO;
+    
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
 }
@@ -219,6 +234,7 @@ static NSUserDefaults *defaults_;
     {
         NSString* fileNameOpened = [[[openDlg URLs] objectAtIndex:0] path];
         [_pathField setStringValue:fileNameOpened];
+        
         [self gotoUnzipFile];
     }
 }
@@ -351,10 +367,11 @@ static NSUserDefaults *defaults_;
 - (void)fetchAppPath
 {
     [dataSource_ removeAllObjects];
+    [_toResignResources removeAllObjects];
     [self.tableView reloadData];
     [self resetControlsStatus];
     
-    NSArray *dirContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:[self payloadPath] error:nil];
+    NSArray *dirContents = [fileManager_ contentsOfDirectoryAtPath:[self payloadPath] error:nil];
     
     NSMutableArray *apps = [NSMutableArray new];
     for (NSString *file in dirContents) {
@@ -390,7 +407,7 @@ static NSUserDefaults *defaults_;
 
 - (NSArray *)appPathsInPath:(NSString *)path
 {
-    NSArray *dirContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path error:nil];
+    NSArray *dirContents = [fileManager_ contentsOfDirectoryAtPath:path error:nil];
     NSMutableArray *apps = [NSMutableArray new];
     for (NSString *file in dirContents) {
         NSString *subPath = [path stringByAppendingPathComponent:file];
@@ -424,7 +441,7 @@ static NSUserDefaults *defaults_;
         [timer invalidate];
         _unzipTask = nil;
         
-        if ([[NSFileManager defaultManager] fileExistsAtPath:[self payloadPath]]) {
+        if ([fileManager_ fileExistsAtPath:[self payloadPath]]) {
             [_statusLabel setStringValue:@"Read app info success!"];
             
             //stop loading ui
@@ -457,9 +474,9 @@ static NSUserDefaults *defaults_;
             NSLog(@"Setting up working directory in %@",_workingPath);
             [_statusLabel setStringValue:@"Set working dir"];
             
-            [[NSFileManager defaultManager] removeItemAtPath:_workingPath error:nil];
+            [self cleanWorkPath];
             
-            [[NSFileManager defaultManager] createDirectoryAtPath:_workingPath withIntermediateDirectories:TRUE attributes:nil error:nil];
+            [fileManager_ createDirectoryAtPath:_workingPath withIntermediateDirectories:TRUE attributes:nil error:nil];
             
             if (_sourcePath && [_sourcePath length] > 0) {
                 NSLog(@"Unzipping %@",_sourcePath);
@@ -491,6 +508,9 @@ static NSUserDefaults *defaults_;
 }
 
 - (IBAction)resign:(id)sender {
+    
+    [_toResignResources removeAllObjects];
+    
     //Save cert name
     [defaults_ setValue:[NSNumber numberWithInteger:[_certComboBox indexOfSelectedItem]] forKey:kACCertIndexPathKey];
     [defaults_ setValue:[self.provisionTF stringValue] forKey:@"MOBILEPROVISION_PATH"];
@@ -505,21 +525,24 @@ static NSUserDefaults *defaults_;
 {
     if (dylibPath.length)
     {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:dylibPath])
+        if ([fileManager_ fileExistsAtPath:dylibPath])
         {
             NSString *targetPath = [appPath stringByAppendingPathComponent:[dylibPath lastPathComponent]];
-            if ([[NSFileManager defaultManager] fileExistsAtPath:targetPath])
+            if ([fileManager_ fileExistsAtPath:targetPath])
             {
-                [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+                [fileManager_ removeItemAtPath:targetPath error:nil];
             }
             
             NSString *result = [self doTask:@"/bin/cp" arguments:[NSArray arrayWithObjects:dylibPath, targetPath, nil]];
-            if (![[NSFileManager defaultManager] fileExistsAtPath:targetPath])
+            if (![fileManager_ fileExistsAtPath:targetPath])
             {
                 [self showAlertOfKind:NSCriticalAlertStyle WithTitle:@"Error" AndMessage:[@"Failed to copy dylib file: " stringByAppendingString:result ? result : @""]];
                 [_statusLabel setStringValue:[@"Failed to copy dylib file: " stringByAppendingString:result ? result : @""]];
                 return;
             }
+            
+            //cache dylib path
+            [_toResignResources addObject:targetPath];
         }
         
         // Find executable
@@ -632,7 +655,7 @@ static NSUserDefaults *defaults_;
         char *buffer = (char *)malloc(header.sizeofcmds + 2048);
         read(fd, buffer, header.sizeofcmds);
         
-        if ([[NSFileManager defaultManager] fileExistsAtPath:dylibPath])
+        if ([fileManager_ fileExistsAtPath:dylibPath])
         {
             dylibPath = [@"@executable_path" stringByAppendingPathComponent:[dylibPath lastPathComponent]];
         }
@@ -711,7 +734,7 @@ static NSUserDefaults *defaults_;
 
 
 - (BOOL)doITunesMetadataBundleIDChange:(NSString *)newBundleID {
-    NSArray *dirContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:_workingPath error:nil];
+    NSArray *dirContents = [fileManager_ contentsOfDirectoryAtPath:_workingPath error:nil];
     NSString *infoPlistPath = nil;
     
     for (NSString *file in dirContents) {
@@ -736,7 +759,7 @@ static NSUserDefaults *defaults_;
     
     NSMutableDictionary *plist = nil;
     
-    if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+    if ([fileManager_ fileExistsAtPath:filePath]) {
         plist = [[NSMutableDictionary alloc] initWithContentsOfFile:filePath];
         
         //WatchKit App Info.plist中的WKCompanionAppBundleIdentifier配置项必须与iOS App的Info.plist中的CFBundleIdentifier保持一致。
@@ -789,9 +812,9 @@ static NSUserDefaults *defaults_;
         return;
     }
     
-    if ([[NSFileManager defaultManager] fileExistsAtPath:[appPath stringByAppendingPathComponent:@"embedded.mobileprovision"]]) {
+    if ([fileManager_ fileExistsAtPath:[appPath stringByAppendingPathComponent:@"embedded.mobileprovision"]]) {
         NSLog(@"Found embedded.mobileprovision, deleting.");
-        [[NSFileManager defaultManager] removeItemAtPath:[appPath stringByAppendingPathComponent:@"embedded.mobileprovision"] error:nil];
+        [fileManager_ removeItemAtPath:[appPath stringByAppendingPathComponent:@"embedded.mobileprovision"] error:nil];
     }
     
     NSString *targetPath = [appPath stringByAppendingPathComponent:@"embedded.mobileprovision"];
@@ -813,7 +836,7 @@ static NSUserDefaults *defaults_;
         
         NSDictionary *appConfig = dataSource_[_currentCommandIndex];
         NSString *currentAppPath = appConfig[kACAppFilePathKey];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:[currentAppPath stringByAppendingPathComponent:@"embedded.mobileprovision"]]) {
+        if ([fileManager_ fileExistsAtPath:[currentAppPath stringByAppendingPathComponent:@"embedded.mobileprovision"]]) {
             
             NSDictionary *provisioningDic = [self getEntilementsDicForProvisionFile:[currentAppPath stringByAppendingPathComponent:@"embedded.mobileprovision"]];
             NSLog(@"provisioningDic：%@",provisioningDic);
@@ -913,12 +936,22 @@ static NSUserDefaults *defaults_;
         }
     }
     
+    // MARK: Acorld ----> Step Start Sign resources
+    if (_toResignResources.count) {
+        _isSigningResources = YES;
+        
+        NSString *firstResource = [_toResignResources lastObject];
+        [self signFile:firstResource entitlements:nil];
+        return;
+    }
+    
     // MARK: Acorld ----> Step Start Codesign...
     NSString *entitlementsPath = [self appConfigForKey:kACEntitlementsPathName atIndex:_currentCommandIndex];
     [self signFile:appPath entitlements:entitlementsPath];
 }
 
-- (void)signFile:(NSString*)filePath  entitlements:(NSString *)entitlementsPath{
+- (void)signFile:(NSString*)filePath  entitlements:(NSString *)entitlementsPath
+{
     NSLog(@"Codesigning %@", filePath);
     [_statusLabel setStringValue:[NSString stringWithFormat:@"Codesigning %@",filePath]];
     
@@ -965,6 +998,25 @@ static NSUserDefaults *defaults_;
     if ([_codesignTask isRunning] == 0) {
         [timer invalidate];
         _codesignTask = nil;
+        
+        //if it is signing resources，judge the next
+        if (_isSigningResources) {
+            [_toResignResources removeLastObject];
+            if (_toResignResources.count) {
+                [self signFile:_toResignResources.lastObject entitlements:nil];
+                return;
+            }
+            
+            _isSigningResources = NO;
+            
+            // after sign resources,sign the main app
+            // MARK: Acorld ----> Step Start Codesign...
+            NSString *appPath = [self appConfigForKey:kACAppFilePathKey atIndex:_currentCommandIndex];
+            NSString *entitlementsPath = [self appConfigForKey:kACEntitlementsPathName atIndex:_currentCommandIndex];
+            [self signFile:appPath entitlements:entitlementsPath];
+            return;
+        }
+        
         
         NSLog(@"Codesigning done");
         [_statusLabel setStringValue:@"Codesigning completed"];
@@ -1022,6 +1074,15 @@ static NSUserDefaults *defaults_;
                 return;
             }
             
+            //remove all cache entitlements file
+            for (int i = 0; i < dataSource_.count; i++)
+            {
+                NSString *entitlementPath = [self appConfigForKey:kACEntitlementsPathName atIndex:i];
+                if ([fileManager_ fileExistsAtPath:entitlementPath]) {
+                    [fileManager_ removeItemAtPath:entitlementPath error:nil];
+                }
+            }
+            
             // MARK: Acorld ----> Step zip
             [self doZip];
         } else {
@@ -1052,6 +1113,11 @@ static NSUserDefaults *defaults_;
         
         NSLog(@"Dest: %@",destinationPath);
         
+        //delete the old ipa file 
+        if ([fileManager_ fileExistsAtPath:destinationPath]) {
+            [fileManager_ removeItemAtPath:destinationPath error:nil];
+        }
+        
         _zipTask = [[NSTask alloc] init];
         [_zipTask setLaunchPath:@"/usr/bin/zip"];
         [_zipTask setCurrentDirectoryPath:_workingPath];
@@ -1073,16 +1139,12 @@ static NSUserDefaults *defaults_;
         NSLog(@"Zipping done");
         [_statusLabel setStringValue:[NSString stringWithFormat:@"Saved %@",_fileName]];
         
-        [[NSFileManager defaultManager] removeItemAtPath:_workingPath error:nil];
-        
         [self enableControls];
         
         NSString *result = [[_codesigningResult stringByAppendingString:@"\n\n"] stringByAppendingString:_verificationResult];
         NSLog(@"Codesigning result: %@",result);
     }
 }
-
-
 
 #pragma mark - Tools
 #pragma mark -
@@ -1119,6 +1181,11 @@ static NSUserDefaults *defaults_;
     printf("%s", [plistString UTF8String]);
     
     return plist;
+}
+
+- (void)cleanWorkPath
+{
+    [fileManager_ removeItemAtPath:_workingPath error:nil];
 }
 
 #pragma mark - Get certs
