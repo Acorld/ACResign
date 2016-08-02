@@ -240,6 +240,9 @@ static NSUserDefaults *defaults_;
 }
 
 - (void)disableControls {
+    
+    self.tableView.enabled = NO;
+    
     [_pathField setEnabled:FALSE];
     [_browseButton setEnabled:FALSE];
     [_resignButton setEnabled:FALSE];
@@ -253,6 +256,8 @@ static NSUserDefaults *defaults_;
 }
 
 - (void)enableControls {
+    
+    self.tableView.enabled = YES;
     [_pathField setEnabled:TRUE];
     [_browseButton setEnabled:TRUE];
     [_resignButton setEnabled:TRUE];
@@ -599,6 +604,8 @@ static NSUserDefaults *defaults_;
     {
         uint32_t magic;
         read(fd, &magic, sizeof(magic));
+        
+        //judge fat binary or thin binary
         if (magic == MH_MAGIC || magic == MH_MAGIC_64)
         {
             lseek(fd, 0, SEEK_SET);
@@ -612,6 +619,7 @@ static NSUserDefaults *defaults_;
             int nArch = header.nfat_arch;
             if (magic == FAT_CIGAM) nArch = [self bigEndianToSmallEndian:header.nfat_arch];
             
+            //get archs offsets
             struct fat_arch arch;
             NSMutableArray *offsetArray = [NSMutableArray array];
             for (int i = 0; i < nArch; i++)
@@ -623,6 +631,7 @@ static NSUserDefaults *defaults_;
                 [offsetArray addObject:[NSNumber numberWithUnsignedInt:offset]];
             }
             
+            //insert dylib for each arch
             for (NSNumber *offsetNum in offsetArray)
             {
                 lseek(fd, [offsetNum unsignedIntValue], SEEK_SET);
@@ -953,7 +962,7 @@ static NSUserDefaults *defaults_;
 - (void)signFile:(NSString*)filePath  entitlements:(NSString *)entitlementsPath
 {
     NSLog(@"Codesigning %@", filePath);
-    [_statusLabel setStringValue:[NSString stringWithFormat:@"Codesigning %@",filePath]];
+    [_statusLabel setStringValue:[NSString stringWithFormat:@"Codesigning %@",[filePath lastPathComponent]]];
     
     NSMutableArray *arguments = [NSMutableArray arrayWithObjects:@"-fs", [_certComboBox objectValue], nil];
     NSString *infoPath = [NSString stringWithFormat:@"%@/Info.plist", filePath];
